@@ -1,0 +1,2 @@
+epoch,global_step,train_steps,replay_size,epsilon,train_avg_reward,train_hit_rate,train_invalid_action_rate,loss,eval_steps,eval_avg_reward,eval_hit_rate,eval_invalid_action_rate
+1,134475,133476,50000,0.050000000000000044,0.24571109871723368,0.24571109871723368,0.0,2.5824591785686297,28816.0,0.19218489727928928,0.19218489727928928,0.0

@@ -1,0 +1,11 @@
+{
+  "run_dir": "DQN\\runs_lr_sweep\\double_dqn_worker_lr0.01_seed42",
+  "best_val_reward": 0.221682398667407,
+  "best_checkpoint": "DQN\\runs_lr_sweep\\double_dqn_worker_lr0.01_seed42\\best_model.pt",
+  "last_checkpoint": "DQN\\runs_lr_sweep\\double_dqn_worker_lr0.01_seed42\\last_model.pt",
+  "state_shape": [
+    21,
+    11
+  ],
+  "action_dim": 21
+}

@@ -1,0 +1,35 @@
+{
+  "variant": "double_dqn",
+  "reward_type": "worker",
+  "lr": 0.001,
+  "gamma": 0.0,
+  "epochs": 5,
+  "batch_size": 64,
+  "buffer_size": 50000,
+  "min_replay_size": 1000,
+  "target_update_interval": 500,
+  "epsilon_start": 1.0,
+  "epsilon_end": 0.05,
+  "epsilon_decay_steps": 20000,
+  "hidden_dims": [
+    256,
+    128
+  ],
+  "network_arch": "candidate_scorer",
+  "aux_ce_weight": 1.0,
+  "train_split": "train",
+  "val_split": "val",
+  "train_limit": 0,
+  "val_limit": 0,
+  "max_steps_per_epoch": null,
+  "max_eval_steps": null,
+  "seed": 42,
+  "device": "auto",
+  "output_dir": "DQN/runs_lr_sweep",
+  "run_name": "double_dqn_worker_lr0.001_seed42",
+  "learning_rates": [
+    0.01,
+    0.001,
+    0.0001
+  ]
+}
