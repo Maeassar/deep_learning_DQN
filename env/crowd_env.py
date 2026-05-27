@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import pickle
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -97,6 +98,7 @@ class CrowdRecEnv:
         feature_order: Optional[Sequence[str]] = None,
         invalid_action_penalty: float = -1.0,
         requester_quality_weight: float = 1.0,
+        requester_urgency_weight: float = 0.5,
         requester_popularity_weight: float = 0.0,
         hybrid_alpha: float = 0.5,
         seed: Optional[int] = None,
@@ -115,6 +117,7 @@ class CrowdRecEnv:
         self.invalid_action_penalty = float(invalid_action_penalty)
         # 请求者奖励的两个权重：worker 质量和 project 流行度。
         self.requester_quality_weight = float(requester_quality_weight)
+        self.requester_urgency_weight = float(requester_urgency_weight)
         self.requester_popularity_weight = float(requester_popularity_weight)
         # 混合奖励中，worker_reward 的占比；1 - alpha 是 requester_reward 占比。
         self.hybrid_alpha = float(hybrid_alpha)
@@ -161,16 +164,20 @@ class CrowdRecEnv:
             raise RuntimeError("step() called after episode is done. Call reset().")
 
         sample = self.data[self.index]
-        num_candidates = len(sample["candidate_projects"])
-        # action 必须落在真实候选任务范围内，不能选 padding 出来的空位置。
-        valid_action = 0 <= int(action) < num_candidates
+        state = self._build_state(sample)
+        action_int = int(action)
+        # action 必须落在 action_mask 允许的位置，不能选 padding 或已满任务。
+        valid_action = (
+            0 <= action_int < self.max_candidates
+            and state["action_mask"][action_int] > 0
+        )
 
         if valid_action:
-            reward = self._compute_reward(sample, int(action))
+            reward = self._compute_reward(sample, action_int)
         else:
             reward = self.invalid_action_penalty
 
-        info = self._build_info(sample, int(action), valid_action, reward)
+        info = self._build_info(sample, action_int, valid_action, reward)
 
         # 本环境把每条样本当作一个时间步，所以 step 后直接移动到下一条样本。
         self.index += 1
@@ -208,8 +215,9 @@ class CrowdRecEnv:
 
         n = len(vectors)
         features[:n, :] = np.asarray(vectors, dtype=np.float32)
-        # mask 前 n 个位置为 1，表示这些 action 可以选择。
-        action_mask[:n] = 1.0
+        for i in range(n):
+            if self._candidate_has_remaining_slot(sample, i):
+                action_mask[i] = 1.0
 
         return {
             "features": features,
@@ -235,11 +243,14 @@ class CrowdRecEnv:
             return worker_reward
         if self.reward_type == "requester":
             return requester_reward
+        if self.reward_type == "requester_urgency":
+            return self._requester_urgency_reward(sample, action)
         if self.reward_type == "hybrid":
             return self.hybrid_alpha * worker_reward + (1.0 - self.hybrid_alpha) * requester_reward
 
         raise ValueError(
-            f"Unknown reward_type={self.reward_type!r}. Use 'worker', 'requester', or 'hybrid'."
+            f"Unknown reward_type={self.reward_type!r}. "
+            "Use 'worker', 'requester', 'requester_urgency', or 'hybrid'."
         )
 
     def _requester_reward(self, sample: Mapping[str, Any], action: int) -> float:
@@ -253,6 +264,89 @@ class CrowdRecEnv:
             self.requester_quality_weight * quality
             + self.requester_popularity_weight * popularity
         )
+
+    def _requester_urgency_reward(self, sample: Mapping[str, Any], action: int) -> float:
+        """请求者紧迫度奖励：高质量 worker 优先推荐给更紧急的项目。"""
+
+        feat = sample["candidate_features"][action]
+        quality = float(feat["worker_quality"])
+        popularity = float(feat.get("project_popularity", 0.0))
+        urgency = self._compute_urgency(sample, action)
+        return (
+            self.requester_quality_weight * quality
+            + self.requester_urgency_weight * urgency
+            + self.requester_popularity_weight * popularity
+        )
+
+    def _compute_urgency(self, sample: Mapping[str, Any], action: int) -> float:
+        """根据 deadline 动态计算紧迫度，缺失时回退到 project_duration_days。"""
+
+        feat = sample["candidate_features"][action]
+        project = sample["candidate_projects"][action]
+        deadline = self._lookup_candidate_value(project, feat, "deadline")
+
+        remaining_days = None
+        if deadline is not None:
+            deadline_dt = self._parse_datetime(deadline)
+            timestamp_dt = self._parse_datetime(sample.get("timestamp"))
+            if deadline_dt is not None and timestamp_dt is not None:
+                remaining_days = (deadline_dt - timestamp_dt).total_seconds() / 86400.0
+
+        if remaining_days is None:
+            remaining_days = float(feat.get("project_duration_days", 0.0))
+
+        remaining_days = max(float(remaining_days), 0.0)
+        return float(1.0 / (1.0 + np.exp(remaining_days)))
+
+    def _candidate_has_remaining_slot(self, sample: Mapping[str, Any], index: int) -> bool:
+        """检查候选任务是否还有名额；字段缺失时保持旧行为，默认可选。"""
+
+        project = sample["candidate_projects"][index]
+        feat = sample["candidate_features"][index]
+        remaining_slots = self._lookup_candidate_value(project, feat, "remaining_slots")
+        if remaining_slots is None:
+            return True
+        return float(remaining_slots) > 0
+
+    @staticmethod
+    def _lookup_candidate_value(project: Any, feat: Mapping[str, Any], name: str) -> Any:
+        """从 candidate_project 或 candidate_feature 中读取同名字段。"""
+
+        if isinstance(project, Mapping) and name in project:
+            return project[name]
+        return feat.get(name)
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> Optional[datetime]:
+        """兼容 datetime、date、时间戳字符串等常见时间格式。"""
+
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if hasattr(value, "to_pydatetime"):
+            return value.to_pydatetime()
+        if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+            return datetime(value.year, value.month, value.day)
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d"):
+                try:
+                    return datetime.strptime(text, fmt)
+                except ValueError:
+                    pass
+            try:
+                parsed = datetime.fromisoformat(text)
+                return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+            except ValueError:
+                return None
+        return None
 
     def _build_info(
         self,

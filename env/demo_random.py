@@ -42,7 +42,7 @@ def main() -> None:
     parser.add_argument("--split", choices=["train", "val", "test"], default="train")
     parser.add_argument(
         "--reward-type",
-        choices=["worker", "requester", "hybrid"],
+        choices=["worker", "requester", "requester_urgency", "hybrid"],
         default="worker",
     )
     parser.add_argument("--max-steps", type=int, default=1000)

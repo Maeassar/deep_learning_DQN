@@ -81,6 +81,13 @@ action_dim = 21
 
 如果某条样本只有 5 个候选任务，那么前 5 行是有效候选，其余行全 0，`action_mask` 后 16 位为 0。
 
+如果候选任务带有动态剩余名额字段 `remaining_slots`，环境会同时用它过滤动作：
+
+```text
+remaining_slots <= 0 时，对应 action_mask 位置为 0
+remaining_slots 缺失时，默认该候选任务仍可推荐
+```
+
 ## Action 定义
 
 `action` 是候选 project 的下标：
@@ -92,6 +99,8 @@ action ∈ [0, num_candidates - 1]
 例如 `action = 3` 表示推荐当前样本的第 4 个候选 project。
 
 如果模型选到 padding 位置，环境会返回 `invalid_action_penalty`，默认是 `-1.0`。
+
+如果模型选到 `remaining_slots <= 0` 的已满任务，也会被视为非法 action，并返回同样的惩罚。
 
 ## Reward 定义
 
@@ -146,6 +155,32 @@ env = CrowdRecEnv(
 worker_quality + 0.2 * project_popularity
 ```
 
+### 请求者紧迫度利益
+
+```python
+env = CrowdRecEnv(
+    train_data,
+    reward_type="requester_urgency",
+    requester_quality_weight=1.0,
+    requester_urgency_weight=0.5,
+    requester_popularity_weight=0.0,
+)
+```
+
+默认命中奖励为：
+
+```text
+worker_quality + 0.5 * urgency
+```
+
+如果候选任务数据里有 `deadline`，环境会用 `sample["timestamp"]` 到 deadline 的剩余天数动态计算紧迫度：
+
+```text
+urgency = 1 / (1 + exp(remaining_days))
+```
+
+如果当前数据还没有 `deadline`，环境会回退使用 `project_duration_days`，保证旧数据仍能运行。这个奖励类型只是在环境里可用；如果要通过训练脚本命令行直接使用，还需要模型训练脚本把 `requester_urgency` 加进自己的 `--reward-type` 参数。
+
 ### 混合目标
 
 ```python
@@ -159,6 +194,8 @@ env = CrowdRecEnv(train_data, reward_type="hybrid", hybrid_alpha=0.5)
 ```
 
 这个模式可以作为综合平台收益的补充实验。
+
+注意：step 级 `R_t` 日志属于训练循环输出，不在 `env` 目录内实现。环境每次 `step()` 已经返回 `reward` 和 `info["reward"]`，训练脚本可以据此写入 step 级日志或 CSV。
 
 ## 参与者/请求者同学如何接入自己的设计
 
